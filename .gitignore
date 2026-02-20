@@ -1,0 +1,27 @@
+# Credentials cache
+credentials/
+*.env
+*.expiry
+
+# Test coverage
+coverage/
+
+# Node modules
+node_modules/
+
+# Whitelist changes (optional - remove this line if you want to commit the whitelist)
+allowed-commands.json
+
+# macOS
+.DS_Store
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+npm-debug.log*
