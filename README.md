@@ -29,8 +29,13 @@ Model Context Protocol (MCP) server for AWS multi-account access using [Granted]
 cd ~/mcp-server-granted
 npm install
 
-# Interactive setup (recommended)
+# Configuration (choose one):
+# Option 1: Interactive setup (recommended for first-time users)
 node server.js --setup
+
+# Option 2: Manual configuration
+# Create ~/.mcp-granted-config.json with your preferences
+# See CONFIGURATION.md for details
 
 # Add to MCP config (~/.copilot/mcp-config.json)
 {
@@ -100,7 +105,9 @@ sso_role_name = AdminRole
 region = us-east-1
 ```
 
-### Interactive Setup
+### Configuration Options
+
+**Option 1: Interactive Setup (Recommended)**
 
 ```bash
 node server.js --setup
@@ -111,7 +118,25 @@ Guides you through:
 - Safety level configuration
 - Security implications of elevated permissions
 
-Configuration saved to `~/.mcp-granted-config.json`
+**Option 2: Manual Configuration**
+
+Create `~/.mcp-granted-config.json` manually:
+
+```json
+{
+  "profileFilter": {
+    "mode": "suffix",
+    "suffixes": ["/readonly", "/ro"],
+    "profiles": []
+  },
+  "safetyLevel": "strict",
+  "setupCompleted": true
+}
+```
+
+Both options save configuration to `~/.mcp-granted-config.json`
+
+See [CONFIGURATION.md](CONFIGURATION.md) for detailed configuration options.
 
 ## Available Tools
 
