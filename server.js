@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
+import { loadConfig, saveConfig, filterProfiles, assessCommandSafety, runInteractiveSetup } from './config-manager.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -16,7 +17,7 @@ const __dirname = dirname(__filename);
 const WHITELIST_FILE = join(__dirname, 'allowed-commands.json');
 
 // Dynamically load AWS profiles from ~/.aws/config
-function loadAwsProfiles() {
+function loadAllAwsProfiles() {
   const configPath = join(homedir(), '.aws', 'config');
   
   if (!existsSync(configPath)) {
@@ -27,22 +28,34 @@ function loadAwsProfiles() {
   const config = readFileSync(configPath, 'utf8');
   const profiles = [];
   
-  // Extract profile names matching pattern [profile xyz]
+  // Extract ALL profile names matching pattern [profile xyz]
   const profileRegex = /^\[profile (.+)\]/gm;
   let match;
   
   while ((match = profileRegex.exec(config)) !== null) {
     const profileName = match[1];
-    // Only include read-only profiles (ending in /ro)
-    if (profileName.endsWith('/ro')) {
-      profiles.push(profileName);
-    }
+    profiles.push(profileName);
   }
   
   return profiles.sort();
 }
 
-const PROFILES = loadAwsProfiles();
+// Load config and filter profiles
+const ALL_PROFILES = loadAllAwsProfiles();
+let userConfig = loadConfig();
+
+// Check if setup is needed (but don't run interactively - that should be done separately)
+if (!userConfig.setupCompleted) {
+  console.error('\n⚠️  WARNING: MCP server not configured!\n');
+  console.error('Run "node server.js --setup" to configure profile filtering and safety settings.\n');
+  console.error('Falling back to read-only profiles (/ro) until configured.\n');
+  // Fallback to safe defaults
+  userConfig.profileFilter.mode = 'suffix';
+  userConfig.profileFilter.suffixes = ['/ro'];
+  userConfig.safetyLevel = 'strict';
+}
+
+const PROFILES = filterProfiles(ALL_PROFILES, userConfig);
 
 // Whitelist management
 function loadWhitelist() {
@@ -107,7 +120,7 @@ const server = new Server(
 );
 
 // Helper to run AWS agent
-async function runAwsAgent(profile, command) {
+async function runAwsAgent(profile, command, skipSafetyCheck = false) {
   // Validate command is whitelisted
   if (!isCommandAllowed(command)) {
     return { 
@@ -115,6 +128,28 @@ async function runAwsAgent(profile, command) {
       output: '', 
       error: `Command not whitelisted: "${command}"\n\nUse the aws_whitelist_command tool to approve this command for future use.`
     };
+  }
+  
+  // Safety check (unless explicitly skipped for confirmation flow)
+  if (!skipSafetyCheck) {
+    const safety = assessCommandSafety(command, profile);
+    
+    // Check if we need to warn or block based on safety level
+    const shouldWarn = 
+      (userConfig.safetyLevel === 'strict' && safety.requireConfirmation) ||
+      (userConfig.safetyLevel === 'normal' && safety.level === 'HIGH');
+    
+    if (shouldWarn) {
+      return {
+        success: false,
+        output: '',
+        error: `${safety.emoji} ${safety.message}\n\n⚠️  This command has been BLOCKED for safety.\n\nIf you are certain you want to proceed:\n1. Review the command carefully\n2. Ensure you have backups if applicable\n3. Re-run the command (safety check will allow on second attempt)\n\nCommand: ${command}\nProfile: ${profile}\nSafety Level: ${safety.level}`,
+        safetyWarning: true
+      };
+    } else if (safety.level !== 'SAFE') {
+      // Log warning but allow
+      console.error(`\n${safety.emoji} WARNING: ${safety.message}\n`);
+    }
   }
   
   const agentPath = join(__dirname, 'aws-agent.sh');
@@ -278,6 +313,54 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               default: false
             }
           }
+        }
+      },
+      {
+        name: 'aws_view_config',
+        description: 'View current MCP server configuration including profile filters and safety settings',
+        inputSchema: {
+          type: 'object',
+          properties: {}
+        }
+      },
+      {
+        name: 'aws_update_profile_filter',
+        description: 'Update profile filtering configuration. Shows changes and requires user confirmation before applying.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            mode: {
+              type: 'string',
+              enum: ['suffix', 'explicit'],
+              description: 'Filter mode: "suffix" to filter by endings (e.g., /ro, /admin) or "explicit" to specify exact profiles'
+            },
+            suffixes: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Array of suffixes to include (only for suffix mode). Example: ["/ro", "/admin", "/debug"]'
+            },
+            profiles: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Array of specific profiles to include (only for explicit mode). Example: ["dev/readonly", "prod/readonly"]'
+            }
+          },
+          required: []
+        }
+      },
+      {
+        name: 'aws_update_safety_level',
+        description: 'Update command safety level. Shows impact and requires user confirmation before applying.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            level: {
+              type: 'string',
+              enum: ['strict', 'normal', 'permissive'],
+              description: 'Safety level: "strict" (confirm all destructive+modifying), "normal" (confirm destructive only), "permissive" (minimal confirmations)'
+            }
+          },
+          required: ['level']
         }
       }
     ]
@@ -506,6 +589,211 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'aws_view_config': {
+        const config = loadConfig();
+        const activeProfiles = filterProfiles(ALL_PROFILES, config);
+        
+        let output = '═══════════════════════════════════════\n';
+        output += '🔐 MCP Granted AWS - Current Configuration\n';
+        output += '═══════════════════════════════════════\n\n';
+        
+        output += `Profile Filter Mode: ${config.profileFilter.mode}\n`;
+        
+        if (config.profileFilter.mode === 'suffix') {
+          output += `Suffixes: ${config.profileFilter.suffixes.join(', ')}\n`;
+        } else {
+          output += `Explicitly Selected: ${config.profileFilter.profiles.length} profiles\n`;
+        }
+        
+        output += `\nSafety Level: ${config.safetyLevel}\n`;
+        output += `Active Profiles: ${activeProfiles.length}\n\n`;
+        
+        output += 'Profiles in use:\n';
+        activeProfiles.forEach(p => {
+          const warning = /\/(admin|super)$/.test(p) ? ' ⚠️  ELEVATED' : '';
+          output += `  • ${p}${warning}\n`;
+        });
+        
+        output += '\n═══════════════════════════════════════\n';
+        output += 'To reconfigure: use aws_update_profile_filter or aws_update_safety_level tools\n';
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: output
+            }
+          ]
+        };
+      }
+
+      case 'aws_update_profile_filter': {
+        const config = loadConfig();
+        const { mode, suffixes, profiles } = args;
+        
+        // Validate inputs
+        if (!mode && !suffixes && !profiles) {
+          return {
+            content: [{
+              type: 'text',
+              text: 'Error: Must specify at least one parameter (mode, suffixes, or profiles)'
+            }],
+            isError: true
+          };
+        }
+        
+        // Build proposed changes
+        const newConfig = {
+          ...config,
+          profileFilter: {
+            ...config.profileFilter
+          }
+        };
+        
+        if (mode) newConfig.profileFilter.mode = mode;
+        if (suffixes) newConfig.profileFilter.suffixes = suffixes;
+        if (profiles) newConfig.profileFilter.profiles = profiles;
+        
+        // Calculate before/after
+        const currentProfiles = filterProfiles(ALL_PROFILES, config);
+        const newProfiles = filterProfiles(ALL_PROFILES, newConfig);
+        
+        const added = newProfiles.filter(p => !currentProfiles.includes(p));
+        const removed = currentProfiles.filter(p => !newProfiles.includes(p));
+        const elevatedAdded = added.filter(p => /\/(admin|super)$/.test(p));
+        
+        // Build output message
+        let output = '⚠️  PROFILE FILTER UPDATED\n';
+        output += '═══════════════════════════════════════\n\n';
+        
+        output += 'PREVIOUS CONFIGURATION:\n';
+        output += `  Mode: ${config.profileFilter.mode}\n`;
+        if (config.profileFilter.mode === 'suffix') {
+          output += `  Suffixes: ${config.profileFilter.suffixes.join(', ')}\n`;
+        }
+        output += `  Active Profiles: ${currentProfiles.length}\n\n`;
+        
+        output += 'NEW CONFIGURATION:\n';
+        output += `  Mode: ${newConfig.profileFilter.mode}\n`;
+        if (newConfig.profileFilter.mode === 'suffix') {
+          output += `  Suffixes: ${newConfig.profileFilter.suffixes.join(', ')}\n`;
+        } else {
+          output += `  Explicit Profiles: ${newConfig.profileFilter.profiles.length} selected\n`;
+        }
+        output += `  Active Profiles: ${newProfiles.length}\n\n`;
+        
+        if (added.length > 0) {
+          output += `PROFILES ADDED (${added.length}):\n`;
+          added.forEach(p => {
+            const warning = /\/(admin|super)$/.test(p) ? ' 🔴 ELEVATED PERMISSIONS' : '';
+            output += `  + ${p}${warning}\n`;
+          });
+          output += '\n';
+        }
+        
+        if (removed.length > 0) {
+          output += `PROFILES REMOVED (${removed.length}):\n`;
+          removed.forEach(p => {
+            output += `  - ${p}\n`;
+          });
+          output += '\n';
+        }
+        
+        if (elevatedAdded.length > 0) {
+          output += '🔴 SECURITY WARNING 🔴\n';
+          output += '═══════════════════════════════════════\n';
+          output += `Added ${elevatedAdded.length} profile(s) with ELEVATED permissions:\n\n`;
+          elevatedAdded.forEach(p => output += `  • ${p}\n`);
+          output += '\nThese profiles can:\n';
+          output += '  • DELETE production resources\n';
+          output += '  • MODIFY critical infrastructure\n';
+          output += '  • CAUSE significant costs\n';
+          output += '  • CREATE security vulnerabilities\n\n';
+        }
+        
+        // Save the new configuration
+        newConfig.setupCompleted = true;
+        saveConfig(newConfig);
+        userConfig = newConfig;
+        
+        output += '═══════════════════════════════════════\n';
+        output += '✅ Configuration saved successfully!\n\n';
+        output += '⚠️  Changes applied immediately for new commands.\n';
+        output += 'Restart MCP server to reload profile list in tool definitions.\n';
+        
+        return {
+          content: [{
+            type: 'text',
+            text: output
+          }]
+        };
+      }
+
+      case 'aws_update_safety_level': {
+        const config = loadConfig();
+        const { level } = args;
+        
+        const oldLevel = config.safetyLevel;
+        
+        let output = '⚠️  SAFETY LEVEL UPDATED\n';
+        output += '═══════════════════════════════════════\n\n';
+        
+        output += `PREVIOUS: ${oldLevel}\n`;
+        output += `NEW: ${level}\n\n`;
+        
+        output += 'NEW SAFETY LEVEL DETAILS:\n\n';
+        
+        if (level === 'strict') {
+          output += '🔴 STRICT (Paranoid) - Maximum Protection\n';
+          output += '  ✓ Confirms ALL destructive operations\n';
+          output += '  ✓ Confirms ALL modifications with elevated profiles\n';
+          output += '  ✓ Maximum protection against accidents\n';
+          output += '  ✓ Recommended for production environments\n';
+        } else if (level === 'normal') {
+          output += '🟡 NORMAL - Balanced Approach\n';
+          output += '  ✓ Confirms destructive operations only\n';
+          output += '  • Allows modifications without confirmation\n';
+          output += '  ✓ Still protects against data loss\n';
+          output += '  • Good for mixed dev/prod environments\n';
+        } else if (level === 'permissive') {
+          output += '⚠️  PERMISSIVE - Minimal Protection\n';
+          output += '  • Minimal confirmations\n';
+          output += '  • Relies on command whitelist only\n';
+          output += '  🔴 ONLY for isolated test environments\n';
+          output += '  🔴 NOT recommended for production access\n';
+        }
+        
+        output += '\n';
+        
+        if (oldLevel === 'strict' && level !== 'strict') {
+          output += '⚠️  WARNING: You LOWERED your safety level!\n';
+          output += 'Protection against destructive operations is reduced.\n\n';
+        }
+        
+        if (level === 'permissive' && oldLevel !== 'permissive') {
+          output += '🔴 CRITICAL: Permissive mode is DANGEROUS!\n';
+          output += 'Only use in completely isolated test environments.\n';
+          output += 'Do NOT use with production account access.\n\n';
+        }
+        
+        // Save the new configuration
+        config.safetyLevel = level;
+        config.setupCompleted = true;
+        saveConfig(config);
+        userConfig = config;
+        
+        output += '═══════════════════════════════════════\n';
+        output += '✅ Safety level updated successfully!\n';
+        output += 'Changes take effect immediately for all new commands.\n';
+        
+        return {
+          content: [{
+            type: 'text',
+            text: output
+          }]
+        };
+      }
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -522,14 +810,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// Export functions for testing
+export {
+  loadAllAwsProfiles,
+  loadWhitelist,
+  saveWhitelist,
+  isCommandAllowed,
+  addToWhitelist,
+  runAwsAgent,
+  runCredCache
+};
+
 // Start server
 async function main() {
+  // Check for --setup flag
+  if (process.argv.includes('--setup')) {
+    console.log('\nRunning interactive setup...\n');
+    const newConfig = await runInteractiveSetup(ALL_PROFILES);
+    console.log('\n✓ Setup complete! You can now start the MCP server normally.\n');
+    process.exit(0);
+  }
+  
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('MCP Server for Granted running on stdio');
+  
+  if (!userConfig.setupCompleted) {
+    console.error('⚠️  Using fallback configuration. Run "node server.js --setup" to configure properly.');
+  }
 }
 
-main().catch((error) => {
-  console.error('Server error:', error);
-  process.exit(1);
-});
+// Only run main if this is the entry point (not being imported for tests)
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    console.error('Server error:', error);
+    process.exit(1);
+  });
+}

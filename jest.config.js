@@ -4,11 +4,12 @@ export default {
   coverageDirectory: 'coverage',
   collectCoverageFrom: [
     'server.js',
+    'config-manager.js',
     '!**/node_modules/**',
     '!**/coverage/**',
+    '!**/test/**',
   ],
   testMatch: [
-    '**/__tests__/**/*.test.js',
-    '**/*.test.js'
+    '**/test/**/*.test.js'
   ],
 };

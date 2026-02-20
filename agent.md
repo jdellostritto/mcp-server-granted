@@ -1,334 +1,211 @@
 # MCP Server for Granted
 
-[![CI](https://github.com/YOUR_USERNAME/mcp-server-granted/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/mcp-server-granted/actions/workflows/ci.yml)
+Model Context Protocol (MCP) server for AWS multi-account access using [Granted](https://granted.dev), with automatic credential caching, intelligent command safety detection, and security-first whitelisting.
 
-Model Context Protocol (MCP) server for AWS multi-account access using [Granted](https://granted.dev), with automatic credential caching and command whitelisting.
+> **Note:** This is an independent implementation. [Granted](https://granted.dev) is a product by [Common Fate](https://commonfate.io).
 
-> **Note:** This is an independent MCP server implementation. [Granted](https://granted.dev) is a product by [Common Fate](https://commonfate.io).
+## Features
 
-## What This Does
+- 🔐 **Secure AWS Access** - Automatic credential caching with Granted
+- 🎯 **Multi-Account Support** - Query resources across multiple AWS accounts simultaneously
+- 🛡️ **Intelligent Safety** - Automatic detection and blocking of destructive operations
+- ⚙️ **Configurable Profiles** - Suffix filtering or explicit profile selection
+- 📋 **Command Whitelisting** - Security-first approach with persistent approval
+- 🔍 **Dynamic Discovery** - Auto-discovers profiles from `~/.aws/config`
 
-Provides AI assistants (GitHub Copilot, Claude, etc.) with the ability to:
-- Query AWS resources across multiple accounts
-- Automatically manage AWS credential caching using Granted
-- Dynamically discover AWS profiles from `~/.aws/config`
-- Run AWS CLI commands with security-first whitelisting
-- Track and approve commands for persistent access
-
-## Installation
+## Quick Start
 
 ### Prerequisites
 
-- **Node.js 18+** - For the MCP server
-- **AWS CLI** - For running AWS commands
-- **Granted** - For AWS role assumption and credential management
-  ```bash
-  brew install granted
-  ```
-- **GitHub Copilot CLI** or compatible MCP client
-- **~/.aws/config** - Must contain your AWS SSO profiles
+- Node.js 18+
+- AWS CLI
+- [Granted](https://granted.dev): `brew install granted`
+- AWS SSO configured in `~/.aws/config`
 
-### AWS Configuration
+### Installation
 
-The server **automatically discovers profiles** from `~/.aws/config`. It will load all profiles ending in `/ro` (read-only).
+```bash
+# Clone and install
+cd ~/mcp-server-granted
+npm install
 
-**Example `~/.aws/config`:**
+# Interactive setup (recommended)
+node server.js --setup
+
+# Add to MCP config (~/.copilot/mcp-config.json)
+{
+  "mcpServers": {
+    "mcp-server-granted": {
+      "command": "node",
+      "args": ["/Users/YOUR_USERNAME/mcp-server-granted/server.js"]
+    }
+  }
+}
+```
+
+### Basic Usage
+
+Once installed, ask your AI assistant:
+
+```
+"List S3 buckets in dev/readonly"
+"Show VPCs across all prod accounts"
+"What's my AWS credential status?"
+```
+
+## How It Works
+
+### Profile Discovery
+Automatically loads AWS profiles from `~/.aws/config`. Configure which profiles to use:
+- **Suffix filtering**: Include profiles ending in `/readonly`, `/admin`, etc.
+- **Explicit list**: Manually select specific profiles
+
+### Safety Levels
+- **Strict** (default): Confirms all destructive and modifying operations
+- **Normal**: Confirms destructive operations only
+- **Permissive**: Minimal confirmations (test environments only)
+
+### Command Whitelisting
+Security-first approach where all AWS commands must be explicitly approved:
+
+1. First run of `aws ec2 describe-instances` → ❌ Blocked
+2. AI calls `aws_whitelist_command` → ✅ Approved
+3. Subsequent runs → ✅ Allowed immediately
+
+Whitelist persists across sessions - approve once, use forever.
+
+### Credential Caching
+- Uses Granted for AWS SSO authentication
+- Caches credentials locally (50-minute validity)
+- Auto-refreshes expired credentials
+- Temporary session tokens (never long-term keys)
+
+## Configuration
+
+### Example AWS Config
+
 ```ini
-[profile login]
-sso_start_url = https://your-org.awsapps.com/start/
-sso_region = us-east-1
-
-[profile dev/vault/ro]
+[profile dev/readonly]
 sso_start_url = https://your-org.awsapps.com/start/
 sso_region = us-east-1
 sso_account_id = 123456789012
 sso_role_name = ReadOnlyRole
 region = us-west-2
 
-[profile prod/vault/ro]
+[profile prod/admin]
 sso_start_url = https://your-org.awsapps.com/start/
 sso_region = us-east-1
 sso_account_id = 987654321098
-sso_role_name = ReadOnlyRole
-region = us-west-2
+sso_role_name = AdminRole
+region = us-east-1
 ```
 
-**Note:** Only profiles ending in `/ro` are loaded for security. This prevents accidental write operations.
+### Interactive Setup
 
-### Setup
-
-1. **Install dependencies:**
-   ```bash
-   cd ~/aws-access
-   npm install
-   ```
-
-2. **Add to your MCP configuration:**
-   
-   Edit `~/.copilot/mcp-config.json` and add:
-   ```json
-   {
-     "mcpServers": {
-       "mcp-server-granted": {
-         "command": "node",
-         "args": ["/Users/YOUR_USERNAME/aws-access/server.js"]
-       }
-     }
-   }
-   ```
-   
-   **Important:** Replace `YOUR_USERNAME` with your actual username!
-
-3. **Restart Copilot CLI** (if already running)
-
-The server is now available as `mcp-server-granted` with tools prefixed with `aws_`.
-
-## How It Works
-
-### Dynamic Profile Discovery
-
-Profiles are **loaded dynamically** from `~/.aws/config`:
-- No hardcoded account IDs or profile names
-- Safe to commit to version control
-- Automatically picks up new profiles when added to AWS config
-- Filters for read-only profiles (ending in `/ro`)
-
-### Credential Caching
-
-1. **First request** - Uses `granted credential-process` to assume role via SSO
-2. **Caches credentials** - Stores AWS session tokens in `~/aws-access/credentials/`
-3. **Validity tracking** - Credentials valid for 50 minutes
-4. **Auto-refresh** - Expired credentials refreshed automatically on next use
-5. **Security** - Uses temporary session tokens, never long-term keys
-
-### Command Whitelisting
-
-**Security-first approach:**
-- All AWS commands must be whitelisted before execution
-- Whitelist persists in `allowed-commands.json` (gitignored)
-- First run creates file with minimal defaults: `^aws s3 ls`
-
-**How it works:**
-1. **New command** → Blocked with error message
-2. **AI calls** `aws_whitelist_command` → Command added to whitelist
-3. **Re-run command** → Now allowed
-4. **Future sessions** → Command works immediately
-
-**Two whitelist types:**
-- **Pattern match** (regex): `^aws ec2 describe-` allows all EC2 describe commands
-- **Exact match**: `aws s3 ls s3://specific-bucket` allows only that specific command
-
-**Example flow:**
-```
-User: "List RDS instances in dev/vault"
-  ↓
-AI: Runs: aws rds describe-db-instances --region us-west-2
-  ↓
-Server: ❌ Command not whitelisted
-  ↓
-AI: Calls aws_whitelist_command("^aws rds describe-", "pattern")
-  ↓
-Server: ✅ Pattern added to allowed-commands.json
-  ↓
-AI: Re-runs: aws rds describe-db-instances --region us-west-2
-  ↓
-Server: ✅ Success
+```bash
+node server.js --setup
 ```
 
-**Next time:** The command runs immediately without approval!
+Guides you through:
+- Profile filtering mode selection
+- Safety level configuration
+- Security implications of elevated permissions
 
-## Usage
+Configuration saved to `~/.mcp-granted-config.json`
 
-Once installed, you can ask the AI assistant:
+## Available Tools
 
-```
-"List S3 buckets in dev/vault"
-"Show VPCs in prod/vault"
-"Count EC2 instances across all prod accounts"
-"Check credential cache status"
-"Refresh credentials for dev/vault/ro"
-```
+| Tool | Description |
+|------|-------------|
+| `aws_run_command` | Run AWS CLI command in specific profile |
+| `aws_run_across_profiles` | Run command across multiple profiles |
+| `aws_credential_status` | Check cached credential status |
+| `aws_refresh_credentials` | Refresh credentials for profile(s) |
+| `aws_list_profiles` | List available AWS profiles |
+| `aws_whitelist_command` | Approve command for future use |
+| `aws_list_whitelist` | View whitelisted commands |
+| `aws_view_config` | View current configuration |
+| `aws_logout` | Clear cached credentials |
 
-The MCP server provides these tools:
-- `aws_run_command` - Run AWS CLI command in a specific profile
-- `aws_run_across_profiles` - Run command across multiple profiles
-- `aws_credential_status` - Check cached credential status
-- `aws_refresh_credentials` - Refresh credentials for a profile
-- `aws_list_profiles` - List available profiles (auto-discovered from ~/.aws/config)
-- `aws_whitelist_command` - Add a command to the permanent whitelist
-- `aws_list_whitelist` - View all whitelisted commands
-- `aws_remove_from_whitelist` - Remove a command from the whitelist
-
-## File Structure
+## Project Structure
 
 ```
-~/aws-access/
-├── server.js              - MCP server (Node.js) - dynamically loads profiles
-├── package.json           - Node.js dependencies
-├── aws-agent.sh           - AWS command wrapper - loads profiles from ~/.aws/config
-├── cred-cache.sh          - Credential cache manager - loads profiles from ~/.aws/config
-├── allowed-commands.json  - Dynamic whitelist (auto-created, gitignored)
-├── credentials/           - Cached AWS credentials (gitignored)
-├── .gitignore             - Protects credentials and whitelist
-└── agent.md               - This file
+mcp-server-granted/
+├── server.js              # MCP server
+├── config-manager.js      # Configuration & safety
+├── aws-agent.sh           # AWS command wrapper
+├── cred-cache.sh          # Credential cache manager
+├── test/                  # Test suite (115 tests)
+├── CONFIGURATION.md       # Detailed configuration guide
+└── TESTING_SUMMARY.md     # Test coverage details
 ```
 
-**Safe for Git:**
-- ✅ No hardcoded account IDs
-- ✅ No SSO URLs in code
-- ✅ No profile names in code
-- ✅ No secrets or credentials
-- ✅ All sensitive data in ~/.aws/config (not committed)
+## Safety Features
+
+### Destructive Operation Detection
+Automatically detects and blocks commands containing:
+- `delete`, `remove`, `destroy`, `terminate`
+- Requires explicit confirmation before allowing
+
+### Elevated Profile Warnings
+Profiles with admin/super permissions are flagged:
+```
+dev/admin      ⚠️  ELEVATED
+prod/admin     ⚠️  ELEVATED
+```
+
+### Multi-tier Safety
+Choose your safety level based on environment:
+- Production → Strict
+- Mixed → Normal
+- Test/Dev → Permissive
 
 ## Team Sharing
 
-To share with your team:
+Safe to commit to version control:
+- ✅ No hardcoded credentials
+- ✅ No account IDs in code
+- ✅ All secrets in `~/.aws/config` (gitignored)
+- ✅ Each developer has their own whitelist
 
-1. **Commit to Git** - All code is safe to commit (no secrets)
-2. **Each person clones** and runs `npm install`
-3. **Each person configures** their own `~/.aws/config` with SSO profiles
-4. **Update MCP config** with their local path
-5. **Everyone maintains** their own whitelist based on their usage patterns
+## Testing
 
-**What's shared:**
-- ✅ MCP server code
-- ✅ Bash scripts
-- ✅ Dependencies (package.json)
+```bash
+npm test                # Run all 115 tests
+npm run test:coverage   # Run with coverage report
+```
 
-**What's NOT shared (gitignored):**
-- ❌ Credentials cache
-- ❌ Whitelist file (each dev has their own)
-- ❌ AWS config (each dev has their own ~/.aws/config)
+**Coverage**: ~18% overall, 90-95% business logic coverage
+- Core functions fully tested
+- Framework boilerplate excluded
 
-## Credential Security
-
-- Credentials are cached locally in `~/aws-access/credentials/`
-- Each credential file contains AWS session tokens (not long-term keys)
-- Credentials auto-expire after 50 minutes
-- Uses standard AWS IAM temporary credentials via Granted
+See [TESTING_SUMMARY.md](TESTING_SUMMARY.md) for details.
 
 ## Troubleshooting
 
-**"Command not found" error:**
-- Ensure `aws-agent.sh` and `cred-cache.sh` are executable: `chmod +x *.sh`
+**Command not whitelisted:**
+```
+Use the aws_whitelist_command tool to approve this command
+```
 
-**"No credentials" error:**
-- Run: `./cred-cache.sh get <profile>` to initialize credentials
-- Or ask AI: "Refresh credentials for dev/vault/ro"
+**Profiles not showing:**
+- Run `node server.js --setup` to configure filtering
+- Check `~/.mcp-granted-config.json`
+- Verify `~/.aws/config` format
 
-**"MCP server not found":**
-- Check the path in `~/.copilot/mcp-config.json` is correct
+**Credentials expired:**
+```
+"Refresh credentials for dev/readonly"
+```
+
+**MCP server not found:**
+- Check path in `~/.copilot/mcp-config.json`
 - Restart Copilot CLI
 
-**Profiles not showing up:**
-- Ensure profiles in `~/.aws/config` end with `/ro`
-- Check profile format: `[profile dev/vault/ro]`
-- Restart MCP server to reload profiles
+## Documentation
 
-**Whitelist issues:**
-- Check `allowed-commands.json` exists (auto-created on first run)
-- Verify JSON format is valid
-- Delete file to reset to defaults
-
-## Example Queries
-
-```bash
-# Check what's available
-"List all AWS profiles"
-
-# Query specific account
-"Show me all S3 buckets in prod/vault/ro"
-
-# Query multiple accounts
-"List VPCs across all dev accounts"
-
-# Manage credentials
-"What's the status of my AWS credentials?"
-"Refresh credentials for prod/vault/ro"
-
-# Manage whitelist
-"Show me the whitelisted commands"
-"Add 'aws ecs list-clusters' to the whitelist"
-"Whitelist the pattern '^aws eks describe-'"
-```
-
-## Command Whitelisting
-
-The server uses `allowed-commands.json` to control which AWS commands can be executed.
-
-### Initial Setup
-
-On **first run**, the server creates `allowed-commands.json` with minimal defaults:
-```json
-{
-  "patterns": [
-    "^aws s3 ls"
-  ],
-  "exactMatches": []
-}
-```
-
-### Approving Commands
-
-**When a command is blocked:**
-```
-❌ Command not whitelisted: "aws ec2 describe-vpcs --region us-west-2"
-
-Use the aws_whitelist_command tool to approve this command for future use.
-```
-
-**AI automatically approves:**
-```javascript
-// Pattern match (recommended for flexibility)
-aws_whitelist_command("^aws ec2 describe-", "pattern")
-
-// Exact match (more restrictive)
-aws_whitelist_command("aws ec2 describe-vpcs --region us-west-2", "exact")
-```
-
-**Result:**
-```json
-{
-  "patterns": [
-    "^aws s3 ls",
-    "^aws ec2 describe-"
-  ],
-  "exactMatches": []
-}
-```
-
-### Whitelist Strategies
-
-**Pattern-based (recommended):**
-- `^aws ec2 describe-` - All EC2 describe commands
-- `^aws rds describe-` - All RDS describe commands
-- `^aws s3 (ls|cp|sync)` - Multiple S3 operations
-
-**Exact-based (restrictive):**
-- `aws s3 ls s3://my-specific-bucket` - Only this bucket
-- `aws ec2 describe-instances --instance-ids i-1234567890abcdef0` - Specific instance
-
-### Managing Whitelist
-
-**View current whitelist:**
-```bash
-"Show me whitelisted commands"
-```
-
-**Remove from whitelist:**
-```bash
-"Remove pattern '^aws ecs' from whitelist"
-```
-
-### Security Notes
-
-- ✅ Whitelist persists across sessions (you approve once)
-- ✅ Gitignored - each developer maintains their own
-- ✅ Defaults to minimal permissions (only S3 ls)
-- ✅ Pattern matches use regex for flexible but controlled access
-- ✅ AI can request approval, but cannot bypass whitelist
-
-The whitelist persists across all sessions - you only approve once!
+- [CONFIGURATION.md](CONFIGURATION.md) - Detailed configuration guide
+- [TESTING_SUMMARY.md](TESTING_SUMMARY.md) - Test coverage details
 
 ## License
 
@@ -336,42 +213,19 @@ MIT
 
 ## Credits
 
-- **Granted** by [Common Fate](https://commonfate.io) - AWS credential management tool
-- **Model Context Protocol** by [Anthropic](https://www.anthropic.com)
-
-## Author
-
-**Jim Dellostritto**
-
-## Contributing
-
-When contributing:
-- ✅ Never commit credentials or whitelist files
-- ✅ Test with multiple profile configurations  
-- ✅ Ensure `.gitignore` protects sensitive files
-- ✅ Document any new whitelist patterns in examples
-- ✅ Run tests before submitting PRs: `npm test`
-- ✅ Ensure coverage remains high: `npm run test:coverage`
-
-### Running Tests
-
-```bash
-# Run all tests
-npm test
-
-# Run tests in watch mode
-npm run test:watch
-
-# Run tests with coverage
-npm run test:coverage
-```
-
-**Test Coverage:**
-- Whitelist pattern matching
-- Profile discovery from AWS config
-- Command validation
-- Regex pattern testing
+- [Granted](https://granted.dev) by [Common Fate](https://commonfate.io)
+- [Model Context Protocol](https://modelcontextprotocol.io) by [Anthropic](https://www.anthropic.com)
 
 ## Disclaimer
 
-This is an independent project and is not affiliated with, endorsed by, or sponsored by Common Fate or Anthropic. Granted is a trademark of Common Fate.
+This project was created to solve a specific problem: simplifying AWS CLI access and asset inspection across multiple accounts for the original author. It implements security controls that work for that use case but may not fit all environments.
+
+**Use at your own risk.** This tool:
+- Executes AWS CLI commands with your credentials
+- Modifies AWS resources when configured to do so
+- Manages sensitive credential caching
+- May not meet your organization's security requirements
+
+Always review and test the configuration in non-production environments first. Ensure your safety level and profile filtering align with your security policies.
+
+This is an independent project and is not affiliated with, endorsed by, or sponsored by Common Fate or Anthropic.

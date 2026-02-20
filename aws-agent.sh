@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CRED_CACHE="$SCRIPT_DIR/cred-cache.sh"
-CREDS_DIR="$HOME/aws-access/credentials"
+CREDS_DIR="$HOME/mcp-server-granted/credentials"
 
 # Colors
 BLUE='\033[0;34m'
@@ -84,9 +84,9 @@ Usage:
   $0 --refresh                        Refresh all cached credentials
 
 Examples:
-  $0 prod/vault/ro "aws s3 ls"
+  $0 prod/readonly "aws s3 ls"
   $0 --all "aws ec2 describe-vpcs --output table"
-  $0 --profiles dev/vault/ro,prod/vault/ro "aws s3 ls"
+  $0 --profiles dev/readonly,prod/readonly "aws s3 ls"
   $0 --status
   $0 --refresh
 

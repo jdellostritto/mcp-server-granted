@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-CREDS_DIR="$HOME/aws-access/credentials"
+CREDS_DIR="$HOME/mcp-server-granted/credentials"
 mkdir -p "$CREDS_DIR"
 
 # Dynamically load /ro profiles from ~/.aws/config
@@ -69,9 +69,38 @@ assume_and_cache() {
     # Use granted credential-process to get credentials
     local cred_json
     if ! cred_json=$(granted credential-process --profile "$profile" 2>&1); then
-        echo "Error: Failed to assume role $profile" >&2
-        echo "$cred_json" >&2
-        return 1
+        # Check if this is an SSO token error
+        if echo "$cred_json" | grep -q "error retrieving IAM Identity Center token"; then
+            echo "SSO session expired. Initiating SSO login..." >&2
+            
+            # Extract SSO details from AWS config
+            local sso_start_url=$(grep -A 5 "^\[profile $profile\]" "$HOME/.aws/config" | grep "sso_start_url" | awk '{print $3}')
+            local sso_region=$(grep -A 5 "^\[profile $profile\]" "$HOME/.aws/config" | grep "sso_region" | awk '{print $3}')
+            
+            if [ -z "$sso_start_url" ] || [ -z "$sso_region" ]; then
+                echo "Error: Could not extract SSO configuration from ~/.aws/config" >&2
+                return 1
+            fi
+            
+            # Trigger SSO login
+            echo "Running: granted sso login --sso-start-url $sso_start_url --sso-region $sso_region" >&2
+            if ! granted sso login --sso-start-url "$sso_start_url" --sso-region "$sso_region"; then
+                echo "Error: SSO login failed" >&2
+                return 1
+            fi
+            
+            # Retry credential fetch after SSO login
+            echo "Retrying credential fetch..." >&2
+            if ! cred_json=$(granted credential-process --profile "$profile" 2>&1); then
+                echo "Error: Failed to assume role $profile after SSO login" >&2
+                echo "$cred_json" >&2
+                return 1
+            fi
+        else
+            echo "Error: Failed to assume role $profile" >&2
+            echo "$cred_json" >&2
+            return 1
+        fi
     fi
     
     # Parse JSON and export to file in AWS environment variable format
