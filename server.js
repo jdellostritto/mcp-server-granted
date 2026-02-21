@@ -16,25 +16,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const WHITELIST_FILE = join(__dirname, 'allowed-commands.json');
 
-// Cross-platform in-memory credential cache (replaces cred-cache.sh)
-const credentialCache = new Map(); // profile -> { creds, expiry }
-const CACHE_TTL_MS = 50 * 60 * 1000; // 50 minutes
-
-async function getGrantedCredentials(profile) {
-  const cached = credentialCache.get(profile);
-  if (cached && Date.now() < cached.expiry) {
-    return cached.creds;
-  }
-  const { stdout } = await execAsync(`granted credential-process --profile "${profile}"`);
-  const credJson = JSON.parse(stdout.trim());
-  const creds = {
-    AWS_ACCESS_KEY_ID: credJson.AccessKeyId,
-    AWS_SECRET_ACCESS_KEY: credJson.SecretAccessKey,
-    AWS_SESSION_TOKEN: credJson.SessionToken,
-  };
-  credentialCache.set(profile, { creds, expiry: Date.now() + CACHE_TTL_MS });
-  return creds;
-}
+// Track which profiles have been verified this session (lightweight cache)
+const verifiedProfiles = new Set();
 
 // Dynamically load AWS profiles from ~/.aws/config
 function loadAllAwsProfiles() {
@@ -173,9 +156,9 @@ async function runAwsAgent(profile, command, skipSafetyCheck = false) {
   }
   
   try {
-    const creds = await getGrantedCredentials(profile);
-    const { stdout, stderr } = await execAsync(command, {
-      env: { ...process.env, ...creds },
+    // Append --profile to run the command directly via AWS CLI (cross-platform, no granted dependency)
+    const profiledCommand = `${command} --profile "${profile}"`;
+    const { stdout, stderr } = await execAsync(profiledCommand, {
       maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large outputs
     });
     return { success: true, output: stdout, error: stderr };
@@ -184,33 +167,31 @@ async function runAwsAgent(profile, command, skipSafetyCheck = false) {
   }
 }
 
-// Helper to manage credential cache (cross-platform replacement for cred-cache.sh)
+// Helper to manage credential cache
 async function runCredCache(subcommand) {
   if (subcommand === 'status') {
     let output = 'AWS Credential Cache Status:\n============================\n\n';
     for (const profile of PROFILES) {
-      const cached = credentialCache.get(profile);
-      if (cached) {
-        const remainingSec = Math.floor((cached.expiry - Date.now()) / 1000);
-        if (remainingSec > 0) {
-          output += `✓ ${profile} - Valid (${Math.floor(remainingSec / 60)}m remaining)\n`;
-        } else {
-          output += `✗ ${profile} - Expired\n`;
-        }
-      } else {
-        output += `○ ${profile} - Not cached\n`;
+      try {
+        const { stdout } = await execAsync(`aws sts get-caller-identity --profile "${profile}" --output json`);
+        const identity = JSON.parse(stdout.trim());
+        output += `✓ ${profile} - Valid (Account: ${identity.Account})\n`;
+        verifiedProfiles.add(profile);
+      } catch (e) {
+        output += `✗ ${profile} - No valid credentials\n`;
       }
     }
     return { success: true, output, error: '' };
   }
 
   if (subcommand === 'refresh-all') {
-    credentialCache.clear();
-    let output = 'Refreshing all credentials...\n';
+    verifiedProfiles.clear();
+    let output = 'Refreshing credentials...\n';
     for (const profile of PROFILES) {
       try {
-        await getGrantedCredentials(profile);
-        output += `✓ ${profile} refreshed\n`;
+        await execAsync(`aws sts get-caller-identity --profile "${profile}" --output json`);
+        output += `✓ ${profile} - credentials valid\n`;
+        verifiedProfiles.add(profile);
       } catch (e) {
         output += `✗ ${profile} failed: ${e.message}\n`;
       }
@@ -219,8 +200,8 @@ async function runCredCache(subcommand) {
   }
 
   if (subcommand === 'clear') {
-    credentialCache.clear();
-    return { success: true, output: '✓ Credential cache cleared\n', error: '' };
+    verifiedProfiles.clear();
+    return { success: true, output: '✓ Session credential cache cleared\n', error: '' };
   }
 
   return { success: false, output: '', error: `Unknown subcommand: ${subcommand}` };
