@@ -19,8 +19,43 @@ Model Context Protocol (MCP) server for AWS multi-account access using [Granted]
 
 - Node.js 18+
 - AWS CLI
-- [Granted](https://granted.dev): `brew install granted`
-- AWS SSO configured in `~/.aws/config`
+- [Granted](https://granted.dev)
+- AWS SSO configured in `~/.aws/config` (or `%UserProfile%\.aws\config` on Windows)
+
+#### Installing Granted
+
+**macOS (Homebrew):**
+```bash
+brew tap common-fate/granted
+brew install common-fate/granted/granted
+```
+
+**Windows:**
+1. Download the latest Windows binary from [Granted releases](https://github.com/common-fate/granted/releases)
+   - Look for `granted_x.x.x_windows_x86_64.zip` or `granted_x.x.x_windows_arm64.zip` (depending on your architecture)
+2. Extract the ZIP file
+3. Move `granted.exe` to `C:\Program Files\granted\`
+4. Add `C:\Program Files\granted\` to your PATH:
+   - Open Environment Variables: Win+X → System → Advanced system settings → Environment Variables
+   - Under "System variables", select "Path" → Edit
+   - Click "New" and add: `C:\Program Files\granted\`
+   - Click OK and restart your terminal
+
+**Linux (APT):**
+```bash
+# Add the repository and install
+sudo apt update
+sudo apt install granted
+```
+
+**Linux (Manual):**
+```bash
+# Download, extract, and add to PATH
+curl -OL https://github.com/common-fate/granted/releases/download/v0.38.0/granted_0.38.0_linux_x86_64.tar.gz
+sudo tar -zxvf granted_0.38.0_linux_x86_64.tar.gz -C /usr/local/bin/
+```
+
+Verify installation: `granted -v`
 
 ### Installation
 
@@ -43,6 +78,18 @@ node server.js --setup
     "mcp-server-granted": {
       "command": "node",
       "args": ["/Users/YOUR_USERNAME/mcp-server-granted/server.js"]
+    }
+  }
+}
+```
+
+**Windows MCP Config Example:**
+```json
+{
+  "mcpServers": {
+    "mcp-server-granted": {
+      "command": "node",
+      "args": ["C:\\Users\\YOUR_USERNAME\\mcp-server-granted\\server.js"]
     }
   }
 }
