@@ -7,8 +7,8 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { homedir } from 'os';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'fs';
+import { homedir, platform } from 'os';
 import { loadConfig, saveConfig, filterProfiles, assessCommandSafety, runInteractiveSetup } from './config-manager.js';
 
 const execAsync = promisify(exec);
@@ -16,24 +16,102 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const WHITELIST_FILE = join(__dirname, 'allowed-commands.json');
 
-// Cross-platform in-memory credential cache (replaces cred-cache.sh)
-const credentialCache = new Map(); // profile -> { creds, expiry }
-const CACHE_TTL_MS = 50 * 60 * 1000; // 50 minutes
-
-async function getGrantedCredentials(profile) {
-  const cached = credentialCache.get(profile);
-  if (cached && Date.now() < cached.expiry) {
-    return cached.creds;
+// On Windows, ensure well-known granted install location is in PATH for child processes
+const childEnv = { ...process.env };
+if (platform() === 'win32') {
+  const grantedDir = 'C:\\Program Files\\granted';
+  if (!childEnv.PATH?.includes(grantedDir)) {
+    childEnv.PATH = `${grantedDir};${childEnv.PATH ?? ''}`;
   }
-  const { stdout } = await execAsync(`granted credential-process --profile "${profile}"`);
-  const credJson = JSON.parse(stdout.trim());
-  const creds = {
+}
+
+// File-based credential cache — mirrors cred-cache.sh behaviour
+const CREDS_DIR = join(homedir(), 'mcp-server-granted', 'credentials');
+
+function getCredFile(profile) {
+  return join(CREDS_DIR, profile.replace(/\//g, '_') + '.env');
+}
+
+function getExpiryFile(profile) {
+  return join(CREDS_DIR, profile.replace(/\//g, '_') + '.expiry');
+}
+
+function areCredsValid(profile) {
+  const credFile = getCredFile(profile);
+  const expiryFile = getExpiryFile(profile);
+  if (!existsSync(credFile) || !existsSync(expiryFile)) return false;
+  const expiry = parseInt(readFileSync(expiryFile, 'utf8').trim(), 10);
+  return Math.floor(Date.now() / 1000) < expiry;
+}
+
+function readCachedCreds(profile) {
+  const lines = readFileSync(getCredFile(profile), 'utf8').trim().split('\n');
+  const creds = {};
+  for (const line of lines) {
+    const eq = line.indexOf('=');
+    if (eq !== -1) creds[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+  }
+  return creds;
+}
+
+function getSsoDetailsForProfile(profile) {
+  const awsConfig = readFileSync(join(homedir(), '.aws', 'config'), 'utf8');
+  // Match the profile section
+  const sectionRegex = new RegExp(`\\[profile ${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]([^\\[]*)`, 's');
+  const section = awsConfig.match(sectionRegex)?.[1] ?? '';
+  const ssoStartUrl = section.match(/sso_start_url\s*=\s*(.+)/)?.[1]?.trim();
+  const ssoRegion = section.match(/sso_region\s*=\s*(.+)/)?.[1]?.trim();
+  return { ssoStartUrl, ssoRegion };
+}
+
+async function assumeAndCache(profile) {
+  mkdirSync(CREDS_DIR, { recursive: true });
+  console.error(`Assuming role: ${profile}...`);
+
+  let credJson;
+  try {
+    const { stdout } = await execAsync(`granted credential-process --profile "${profile}"`, { env: childEnv });
+    credJson = JSON.parse(stdout.trim());
+  } catch (err) {
+    const errMsg = (err.stderr || err.message || '');
+    if (errMsg.includes('error retrieving IAM Identity Center token') || errMsg.includes('error when retrieving credentials')) {
+      console.error('SSO session expired. Initiating SSO login...');
+      const { ssoStartUrl, ssoRegion } = getSsoDetailsForProfile(profile);
+      if (!ssoStartUrl || !ssoRegion) throw new Error('Could not extract SSO configuration from ~/.aws/config');
+
+      await execAsync(`granted sso login --sso-start-url "${ssoStartUrl}" --sso-region "${ssoRegion}"`, { env: childEnv });
+      console.error('Retrying credential fetch...');
+      const { stdout } = await execAsync(`granted credential-process --profile "${profile}"`, { env: childEnv });
+      credJson = JSON.parse(stdout.trim());
+    } else {
+      throw err;
+    }
+  }
+
+  // Write .env file
+  writeFileSync(getCredFile(profile), [
+    `AWS_ACCESS_KEY_ID=${credJson.AccessKeyId}`,
+    `AWS_SECRET_ACCESS_KEY=${credJson.SecretAccessKey}`,
+    `AWS_SESSION_TOKEN=${credJson.SessionToken}`,
+  ].join('\n') + '\n');
+
+  // Write .expiry file (Unix seconds, 50 minutes from now)
+  writeFileSync(getExpiryFile(profile), String(Math.floor(Date.now() / 1000) + 3000));
+  console.error(`✓ Credentials cached for ${profile} (valid for 50 minutes)`);
+
+  return {
     AWS_ACCESS_KEY_ID: credJson.AccessKeyId,
     AWS_SECRET_ACCESS_KEY: credJson.SecretAccessKey,
     AWS_SESSION_TOKEN: credJson.SessionToken,
   };
-  credentialCache.set(profile, { creds, expiry: Date.now() + CACHE_TTL_MS });
-  return creds;
+}
+
+async function getGrantedCredentials(profile) {
+  if (areCredsValid(profile)) {
+    console.error(`Using cached credentials for ${profile}`);
+    return readCachedCreds(profile);
+  }
+  return assumeAndCache(profile);
 }
 
 // Dynamically load AWS profiles from ~/.aws/config
@@ -163,8 +241,10 @@ async function runAwsAgent(profile, command, skipSafetyCheck = false) {
       return {
         success: false,
         output: '',
-        error: `${safety.emoji} ${safety.message}\n\n⚠️  This command has been BLOCKED for safety.\n\nIf you are certain you want to proceed:\n1. Review the command carefully\n2. Ensure you have backups if applicable\n3. Re-run the command (safety check will allow on second attempt)\n\nCommand: ${command}\nProfile: ${profile}\nSafety Level: ${safety.level}`,
-        safetyWarning: true
+        error: `${safety.emoji} ${safety.message}`,
+        safetyWarning: true,
+        requiresConfirmation: true,
+        confirmationMessage: `${safety.emoji} DESTRUCTIVE OPERATION\n\nCommand: ${command}\nProfile: ${profile}\n\n${safety.message.split('\n').pop()}\n\nThis action cannot be undone. Are you sure you want to proceed?`
       };
     } else if (safety.level !== 'SAFE') {
       // Log warning but allow
@@ -175,7 +255,7 @@ async function runAwsAgent(profile, command, skipSafetyCheck = false) {
   try {
     const creds = await getGrantedCredentials(profile);
     const { stdout, stderr } = await execAsync(command, {
-      env: { ...process.env, ...creds },
+      env: { ...childEnv, ...creds },
       maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large outputs
     });
     return { success: true, output: stdout, error: stderr };
@@ -184,16 +264,18 @@ async function runAwsAgent(profile, command, skipSafetyCheck = false) {
   }
 }
 
-// Helper to manage credential cache (cross-platform replacement for cred-cache.sh)
+// Helper to manage credential cache (mirrors cred-cache.sh)
 async function runCredCache(subcommand) {
   if (subcommand === 'status') {
     let output = 'AWS Credential Cache Status:\n============================\n\n';
     for (const profile of PROFILES) {
-      const cached = credentialCache.get(profile);
-      if (cached) {
-        const remainingSec = Math.floor((cached.expiry - Date.now()) / 1000);
-        if (remainingSec > 0) {
-          output += `✓ ${profile} - Valid (${Math.floor(remainingSec / 60)}m remaining)\n`;
+      const credFile = getCredFile(profile);
+      const expiryFile = getExpiryFile(profile);
+      if (existsSync(credFile) && existsSync(expiryFile)) {
+        const expiry = parseInt(readFileSync(expiryFile, 'utf8').trim(), 10);
+        const remaining = expiry - Math.floor(Date.now() / 1000);
+        if (remaining > 0) {
+          output += `✓ ${profile} - Valid (${Math.floor(remaining / 60)}m remaining)\n`;
         } else {
           output += `✗ ${profile} - Expired\n`;
         }
@@ -205,22 +287,29 @@ async function runCredCache(subcommand) {
   }
 
   if (subcommand === 'refresh-all') {
-    credentialCache.clear();
-    let output = 'Refreshing all credentials...\n';
+    let output = 'Refreshing all cached credentials...\n';
     for (const profile of PROFILES) {
       try {
-        await getGrantedCredentials(profile);
+        await assumeAndCache(profile);
         output += `✓ ${profile} refreshed\n`;
       } catch (e) {
         output += `✗ ${profile} failed: ${e.message}\n`;
       }
     }
+    output += '✓ All credentials refreshed\n';
     return { success: true, output, error: '' };
   }
 
   if (subcommand === 'clear') {
-    credentialCache.clear();
-    return { success: true, output: '✓ Credential cache cleared\n', error: '' };
+    mkdirSync(CREDS_DIR, { recursive: true });
+    let cleared = 0;
+    for (const f of readdirSync(CREDS_DIR)) {
+      if (f.endsWith('.env') || f.endsWith('.expiry')) {
+        rmSync(join(CREDS_DIR, f));
+        cleared++;
+      }
+    }
+    return { success: true, output: `✓ Cache cleared (${cleared} files removed)\n`, error: '' };
   }
 
   return { success: false, output: '', error: `Unknown subcommand: ${subcommand}` };
@@ -244,6 +333,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             command: {
               type: 'string',
               description: 'AWS CLI command to run (e.g., "aws s3 ls", "aws ec2 describe-vpcs")'
+            }
+          },
+          required: ['profile', 'command']
+        }
+      },
+      {
+        name: 'aws_run_command_confirmed',
+        description: 'Run an AWS CLI command after user confirmation for destructive operations. Use this after the user confirms they want to proceed with a destructive operation.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            profile: {
+              type: 'string',
+              description: 'AWS profile to use',
+              enum: PROFILES
+            },
+            command: {
+              type: 'string',
+              description: 'AWS CLI command to run'
             }
           },
           required: ['profile', 'command']
@@ -425,6 +533,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { profile, command } = args;
         const result = await runAwsAgent(profile, command);
         
+        // Check if confirmation is required
+        if (result.requiresConfirmation) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: result.error
+              }
+            ],
+            isError: true
+          };
+        }
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.success 
+                ? result.output 
+                : `Error: ${result.error}\n${result.output}`
+            }
+          ]
+        };
+      }
+
+      case 'aws_run_command_confirmed': {
+        const { profile, command } = args;
+        const result = await runAwsAgent(profile, command, true);
+        
         return {
           content: [
             {
@@ -488,9 +625,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'aws_refresh_credentials': {
         const { profile } = args;
-        const result = profile === 'all' 
-          ? await runCredCache('refresh-all')
-          : await runCredCache(`get ${profile}`);
+        let result;
+        if (profile === 'all') {
+          result = await runCredCache('refresh-all');
+        } else {
+          try {
+            await assumeAndCache(profile);
+            result = { success: true, output: '' };
+          } catch (e) {
+            result = { success: false, output: '', error: e.message };
+          }
+        }
         
         return {
           content: [

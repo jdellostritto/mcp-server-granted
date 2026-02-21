@@ -143,6 +143,7 @@ See [CONFIGURATION.md](CONFIGURATION.md) for detailed configuration options.
 | Tool | Description |
 |------|-------------|
 | `aws_run_command` | Run AWS CLI command in specific profile |
+| `aws_run_command_confirmed` | Run AWS CLI command after user confirms destructive operations |
 | `aws_run_across_profiles` | Run command across multiple profiles |
 | `aws_credential_status` | Check cached credential status |
 | `aws_refresh_credentials` | Refresh credentials for profile(s) |
@@ -156,21 +157,31 @@ See [CONFIGURATION.md](CONFIGURATION.md) for detailed configuration options.
 
 ```
 mcp-server-granted/
-├── server.js              # MCP server
-├── config-manager.js      # Configuration & safety
-├── aws-agent.sh           # AWS command wrapper
-├── cred-cache.sh          # Credential cache manager
-├── test/                  # Test suite (115 tests)
-├── CONFIGURATION.md       # Detailed configuration guide
-└── TESTING_SUMMARY.md     # Test coverage details
+├── server.js                      # MCP server
+├── config-manager.js              # Configuration & safety
+├── aws-agent.sh                   # AWS command wrapper
+├── cred-cache.sh                  # Credential cache manager
+├── test/                          # Test suite (115 tests)
+├── CONFIGURATION.md               # Detailed configuration guide
+├── DESTRUCTIVE_OPERATIONS.md      # Confirmation flow documentation
+└── TESTING_SUMMARY.md             # Test coverage details
 ```
 
 ## Safety Features
 
-### Destructive Operation Detection
-Automatically detects and blocks commands containing:
+### Destructive Operation Detection & Confirmation
+Automatically detects commands containing:
 - `delete`, `remove`, `destroy`, `terminate`
-- Requires explicit confirmation before allowing
+
+**Smart Confirmation Flow:**
+1. When you request a destructive operation, the MCP server detects it
+2. Returns an error message with operation details
+3. You can then use `aws_run_command_confirmed` to execute after reviewing
+4. Or choose to cancel and avoid the operation
+
+This prevents accidental destructive actions while allowing intentional operations.
+
+See [DESTRUCTIVE_OPERATIONS.md](DESTRUCTIVE_OPERATIONS.md) for detailed examples and configuration.
 
 ### Elevated Profile Warnings
 Profiles with admin/super permissions are flagged:
