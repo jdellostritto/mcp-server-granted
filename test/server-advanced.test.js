@@ -126,7 +126,9 @@ region = us-west-2
       if (existsSync(BACKUP_FILE)) {
         const content = readFileSync(BACKUP_FILE, 'utf8');
         writeFileSync(TEST_WHITELIST_FILE, content);
-        unlinkSync(BACKUP_FILE);
+        if (existsSync(BACKUP_FILE)) {
+          unlinkSync(BACKUP_FILE);
+        }
       }
     });
 
