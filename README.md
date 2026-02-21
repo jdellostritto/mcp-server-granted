@@ -208,12 +208,10 @@ See [CONFIGURATION.md](CONFIGURATION.md) for detailed configuration options.
 mcp-server-granted/
 ├── server.js                      # MCP server
 ├── config-manager.js              # Configuration & safety
-├── aws-agent.sh                   # AWS command wrapper
-├── cred-cache.sh                  # Credential cache manager
 ├── test/                          # Test suite (115 tests)
 ├── CONFIGURATION.md               # Detailed configuration guide
 ├── DESTRUCTIVE_OPERATIONS.md      # Confirmation flow documentation
-└── TESTING_SUMMARY.md             # Test coverage details
+└── README.md                       # This file
 ```
 
 ## Safety Features
