@@ -110,6 +110,13 @@ Once installed, ask your AI assistant:
 "What's my AWS credential status?"
 ```
 
+Print the server version to verify you're running the latest:
+
+```
+node server.js --version
+```
+
+
 ## How It Works
 
 ### Profile Discovery

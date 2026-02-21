@@ -204,11 +204,23 @@ function addToWhitelist(command, type = 'exact') {
   return whitelist;
 }
 
+// Read package.json version for server metadata
+let serverVersion = '0.0.0';
+try {
+  const pkgPath = join(__dirname, 'package.json');
+  if (existsSync(pkgPath)) {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    serverVersion = pkg.version || serverVersion;
+  }
+} catch (e) {
+  // keep default version if reading fails
+}
+
 // Create MCP server
 const server = new Server(
   {
     name: 'mcp-server-granted',
-    version: '1.0.0',
+    version: serverVersion,
   },
   {
     capabilities: {
@@ -789,6 +801,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let output = '═══════════════════════════════════════\n';
         output += '🔐 MCP Granted AWS - Current Configuration\n';
         output += '═══════════════════════════════════════\n\n';
+        output += `Version: ${serverVersion}\n`;
         
         output += `Profile Filter Mode: ${config.profileFilter.mode}\n`;
         
@@ -1011,7 +1024,8 @@ export {
   isCommandAllowed,
   addToWhitelist,
   runAwsAgent,
-  runCredCache
+  runCredCache,
+  serverVersion
 };
 
 // Start server
@@ -1023,10 +1037,16 @@ async function main() {
     console.log('\n✓ Setup complete! You can now start the MCP server normally.\n');
     process.exit(0);
   }
+
+  // Check for --version or -v when run directly
+  if (process.argv.includes('--version') || process.argv.includes('-v')) {
+    console.log(serverVersion);
+    process.exit(0);
+  }
   
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('MCP Server for Granted running on stdio');
+  console.error(`MCP Server for Granted running on stdio (version ${serverVersion})`);
   
   if (!userConfig.setupCompleted) {
     console.error('⚠️  Using fallback configuration. Run "node server.js --setup" to configure properly.');
