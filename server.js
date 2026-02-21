@@ -6,7 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { loadConfig, saveConfig, filterProfiles, assessCommandSafety, runInteractiveSetup } from './config-manager.js';
@@ -15,6 +15,26 @@ const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const WHITELIST_FILE = join(__dirname, 'allowed-commands.json');
+
+// Cross-platform in-memory credential cache (replaces cred-cache.sh)
+const credentialCache = new Map(); // profile -> { creds, expiry }
+const CACHE_TTL_MS = 50 * 60 * 1000; // 50 minutes
+
+async function getGrantedCredentials(profile) {
+  const cached = credentialCache.get(profile);
+  if (cached && Date.now() < cached.expiry) {
+    return cached.creds;
+  }
+  const { stdout } = await execAsync(`granted credential-process --profile "${profile}"`);
+  const credJson = JSON.parse(stdout.trim());
+  const creds = {
+    AWS_ACCESS_KEY_ID: credJson.AccessKeyId,
+    AWS_SECRET_ACCESS_KEY: credJson.SecretAccessKey,
+    AWS_SESSION_TOKEN: credJson.SessionToken,
+  };
+  credentialCache.set(profile, { creds, expiry: Date.now() + CACHE_TTL_MS });
+  return creds;
+}
 
 // Dynamically load AWS profiles from ~/.aws/config
 function loadAllAwsProfiles() {
@@ -152,11 +172,10 @@ async function runAwsAgent(profile, command, skipSafetyCheck = false) {
     }
   }
   
-  const agentPath = join(__dirname, 'aws-agent.sh');
-  const fullCommand = `${agentPath} ${profile} "${command}"`;
-  
   try {
-    const { stdout, stderr } = await execAsync(fullCommand, {
+    const creds = await getGrantedCredentials(profile);
+    const { stdout, stderr } = await execAsync(command, {
+      env: { ...process.env, ...creds },
       maxBuffer: 10 * 1024 * 1024 // 10MB buffer for large outputs
     });
     return { success: true, output: stdout, error: stderr };
@@ -165,17 +184,46 @@ async function runAwsAgent(profile, command, skipSafetyCheck = false) {
   }
 }
 
-// Helper to run credential cache commands
-async function runCredCache(command) {
-  const cachePath = join(__dirname, 'cred-cache.sh');
-  const fullCommand = `${cachePath} ${command}`;
-  
-  try {
-    const { stdout, stderr } = await execAsync(fullCommand);
-    return { success: true, output: stdout, error: stderr };
-  } catch (error) {
-    return { success: false, output: error.stdout || '', error: error.message };
+// Helper to manage credential cache (cross-platform replacement for cred-cache.sh)
+async function runCredCache(subcommand) {
+  if (subcommand === 'status') {
+    let output = 'AWS Credential Cache Status:\n============================\n\n';
+    for (const profile of PROFILES) {
+      const cached = credentialCache.get(profile);
+      if (cached) {
+        const remainingSec = Math.floor((cached.expiry - Date.now()) / 1000);
+        if (remainingSec > 0) {
+          output += `✓ ${profile} - Valid (${Math.floor(remainingSec / 60)}m remaining)\n`;
+        } else {
+          output += `✗ ${profile} - Expired\n`;
+        }
+      } else {
+        output += `○ ${profile} - Not cached\n`;
+      }
+    }
+    return { success: true, output, error: '' };
   }
+
+  if (subcommand === 'refresh-all') {
+    credentialCache.clear();
+    let output = 'Refreshing all credentials...\n';
+    for (const profile of PROFILES) {
+      try {
+        await getGrantedCredentials(profile);
+        output += `✓ ${profile} refreshed\n`;
+      } catch (e) {
+        output += `✗ ${profile} failed: ${e.message}\n`;
+      }
+    }
+    return { success: true, output, error: '' };
+  }
+
+  if (subcommand === 'clear') {
+    credentialCache.clear();
+    return { success: true, output: '✓ Credential cache cleared\n', error: '' };
+  }
+
+  return { success: false, output: '', error: `Unknown subcommand: ${subcommand}` };
 }
 
 // List available tools
@@ -841,7 +889,7 @@ async function main() {
 }
 
 // Only run main if this is the entry point (not being imported for tests)
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && resolve(process.argv[1]) === __filename) {
   main().catch((error) => {
     console.error('Server error:', error);
     process.exit(1);
