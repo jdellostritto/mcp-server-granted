@@ -20,12 +20,22 @@ const WHITELIST_FILE = join(__dirname, 'allowed-commands.json');
 const credentialCache = new Map(); // profile -> { creds, expiry }
 const CACHE_TTL_MS = 50 * 60 * 1000; // 50 minutes
 
+// Resolve the granted binary — in PATH on Mac/Linux, may need full path on Windows
+function resolveGrantedBin() {
+  if (process.platform === 'win32') {
+    const winPath = 'C:\\Program Files\\granted\\granted.exe';
+    if (existsSync(winPath)) return `"${winPath}"`;
+  }
+  return 'granted';
+}
+const GRANTED_BIN = resolveGrantedBin();
+
 async function getGrantedCredentials(profile) {
   const cached = credentialCache.get(profile);
   if (cached && Date.now() < cached.expiry) {
     return cached.creds;
   }
-  const { stdout } = await execAsync(`granted credential-process --profile "${profile}"`);
+  const { stdout } = await execAsync(`${GRANTED_BIN} credential-process --profile "${profile}"`);
   const credJson = JSON.parse(stdout.trim());
   const creds = {
     AWS_ACCESS_KEY_ID: credJson.AccessKeyId,
