@@ -41,6 +41,8 @@ brew install common-fate/granted/granted
    - Click "New" and add: `C:\Program Files\granted\`
    - Click OK and restart your terminal
 
+> **Note:** Granted is not currently available on Chocolatey. If you'd like to see it packaged there, consider [opening an issue](https://github.com/common-fate/granted/issues) with the Granted team.
+
 **Linux (APT):**
 ```bash
 # Add the repository and install
