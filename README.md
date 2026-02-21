@@ -1,5 +1,8 @@
 # MCP Server for Granted
 
+[![CI](https://github.com/jdellostritto/mcp-server-granted/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jdellostritto/mcp-server-granted/actions/workflows/ci.yml)
+
+
 Model Context Protocol (MCP) server for AWS multi-account access using [Granted](https://granted.dev), with automatic credential caching, intelligent command safety detection, and security-first whitelisting.
 
 > **Note:** This is an independent implementation. [Granted](https://granted.dev) is a product by [Common Fate](https://commonfate.io).
