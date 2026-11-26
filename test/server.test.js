@@ -129,6 +129,53 @@ describe('Whitelist Management', () => {
       expect(isAllowed).toBe(true);
     });
 
+    describe('profile-bound rules', () => {
+      const RUNNER = 'node /repo/scripts/test-cycle.mjs --env dev scenarios';
+
+      beforeEach(() => {
+        const testWhitelist = {
+          // A deliberately broad general pattern that also matches RUNNER:
+          // the binding must still win.
+          patterns: ['^aws s3 ls', '^node '],
+          exactMatches: [],
+          profileBound: [
+            { pattern: '^node /repo/scripts/test-cycle\\.mjs --env (dev|qa) ', profiles: ['dev/e2e'] }
+          ]
+        };
+        writeFileSync(TEST_WHITELIST_FILE, JSON.stringify(testWhitelist, null, 2));
+      });
+
+      test('runs under its bound profile', () => {
+        expect(isCommandAllowed(RUNNER, 'dev/e2e')).toBe(true);
+      });
+
+      test('refuses under any other profile, even an admin one', () => {
+        expect(isCommandAllowed(RUNNER, 'dev/admin')).toBe(false);
+        expect(isCommandAllowed(RUNNER, 'my-account/admin')).toBe(false);
+      });
+
+      test('a broad general pattern cannot re-open a bound command', () => {
+        // '^node ' alone would allow it; the binding must override.
+        expect(isCommandAllowed(RUNNER, 'dev/admin')).toBe(false);
+      });
+
+      test('refuses when no profile is given', () => {
+        expect(isCommandAllowed(RUNNER)).toBe(false);
+      });
+
+      test('leaves unbound commands as they were, under any profile', () => {
+        expect(isCommandAllowed('aws s3 ls', 'dev/admin')).toBe(true);
+        expect(isCommandAllowed('aws s3 ls')).toBe(true);
+        expect(isCommandAllowed('aws lambda list-functions', 'dev/e2e')).toBe(false);
+      });
+
+      test('a whitelist without profileBound behaves exactly as before', () => {
+        writeFileSync(TEST_WHITELIST_FILE, JSON.stringify({ patterns: ['^aws s3 ls'], exactMatches: [] }, null, 2));
+        expect(isCommandAllowed('aws s3 ls', 'dev/admin')).toBe(true);
+        expect(isCommandAllowed('aws ec2 describe-vpcs', 'dev/admin')).toBe(false);
+      });
+    });
+
     test('should match alternation patterns', () => {
       expect(isCommandAllowed('aws s3 cp file.txt s3://bucket/')).toBe(true);
       expect(isCommandAllowed('aws s3 sync . s3://bucket/')).toBe(true);
