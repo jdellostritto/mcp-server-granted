@@ -175,10 +175,27 @@ function saveWhitelist(whitelist) {
   writeFileSync(WHITELIST_FILE, JSON.stringify(whitelist, null, 2));
 }
 
-function isCommandAllowed(command) {
+// A command that matches a profile-bound rule may run ONLY under that
+// rule's profiles. The binding wins over any general pattern, so a broad
+// rule elsewhere cannot re-open it under another profile. It is for
+// commands that run a script with credentials injected, where the profile
+// is the real boundary: a backup script bound to a read-only profile, say,
+// that must never run under an admin one. See README, "Binding a command
+// to a profile".
+function boundRuleFor(whitelist, trimmedCmd) {
+  const bound = Array.isArray(whitelist.profileBound) ? whitelist.profileBound : [];
+  return bound.find(rule => new RegExp(rule.pattern).test(trimmedCmd));
+}
+
+function isCommandAllowed(command, profile) {
   const whitelist = loadWhitelist();
   const trimmedCmd = command.trim();
-  
+
+  const bound = boundRuleFor(whitelist, trimmedCmd);
+  if (bound) {
+    return Array.isArray(bound.profiles) && bound.profiles.includes(profile);
+  }
+
   // Check exact matches
   if (whitelist.exactMatches.includes(trimmedCmd)) {
     return true;
@@ -232,10 +249,18 @@ const server = new Server(
 // Helper to run AWS agent
 async function runAwsAgent(profile, command, skipSafetyCheck = false) {
   // Validate command is whitelisted
-  if (!isCommandAllowed(command)) {
-    return { 
-      success: false, 
-      output: '', 
+  if (!isCommandAllowed(command, profile)) {
+    const bound = boundRuleFor(loadWhitelist(), command.trim());
+    if (bound) {
+      return {
+        success: false,
+        output: '',
+        error: `Command is bound to profile(s) ${(bound.profiles || []).join(', ')} and cannot run under "${profile}".`
+      };
+    }
+    return {
+      success: false,
+      output: '',
       error: `Command not whitelisted: "${command}"\n\nUse the aws_whitelist_command tool to approve this command for future use.`
     };
   }
