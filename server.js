@@ -178,8 +178,10 @@ function saveWhitelist(whitelist) {
 // A command that matches a profile-bound rule may run ONLY under that
 // rule's profiles. The binding wins over any general pattern, so a broad
 // rule elsewhere cannot re-open it under another profile. It is for
-// commands that run repo code with credentials injected (a test runner
-// bound to a narrow profile), where the profile is the real boundary.
+// commands that run a script with credentials injected, where the profile
+// is the real boundary: a backup script bound to a read-only profile, say,
+// that must never run under an admin one. See README, "Binding a command
+// to a profile".
 function boundRuleFor(whitelist, trimmedCmd) {
   const bound = Array.isArray(whitelist.profileBound) ? whitelist.profileBound : [];
   return bound.find(rule => new RegExp(rule.pattern).test(trimmedCmd));

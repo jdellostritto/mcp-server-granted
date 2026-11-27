@@ -140,6 +140,44 @@ Security-first approach where all AWS commands must be explicitly approved:
 
 Whitelist persists across sessions - approve once, use forever.
 
+#### Binding a command to a profile
+
+Some commands should run only with one particular set of credentials. Take
+a backup script that needs nothing more than read access to one bucket.
+You give it a narrow `staging/backup` profile, and you never want it run
+under `staging/admin`, where a mistake could do far more damage.
+
+A `profileBound` rule in `allowed-commands.json` does this. A command that
+matches the rule's pattern runs only under the profiles the rule lists:
+
+```json
+{
+  "patterns": ["^aws s3 ls"],
+  "exactMatches": [],
+  "profileBound": [
+    {
+      "pattern": "^node /srv/tools/backup\\.mjs --bucket [a-z0-9-]+$",
+      "profiles": ["staging/backup"]
+    }
+  ]
+}
+```
+
+| Command                                            | Profile          | Result     |
+| -------------------------------------------------- | ---------------- | ---------- |
+| `node /srv/tools/backup.mjs --bucket app-uploads`  | `staging/backup` | ✅ Allowed |
+| `node /srv/tools/backup.mjs --bucket app-uploads`  | `staging/admin`  | ❌ Refused |
+| `aws s3 ls`                                        | any profile      | ✅ Allowed |
+
+- **The binding wins.** A broader pattern elsewhere, such as `^node `,
+  cannot re-open a bound command under another profile.
+- **The refusal says why:** `Command is bound to profile(s) staging/backup
+and cannot run under "staging/admin".`
+- **Every run path enforces it:** `aws_run_command`,
+  `aws_run_command_confirmed` and `aws_run_across_profiles`.
+- **Nothing changes without it.** A whitelist with no `profileBound` list
+  behaves exactly as before.
+
 ### Credential Caching
 - Uses Granted for AWS SSO authentication
 - Caches credentials locally (50-minute validity)
